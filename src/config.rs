@@ -32,4 +32,8 @@ pub struct Config {
     /// Default token lifetime in seconds.
     #[arg(long, env = "MOAT_TOKEN_LIFETIME", default_value = "3600")]
     pub token_lifetime_secs: u64,
+
+    /// Secret for signing session tokens. Generate with: openssl rand -hex 32
+    #[arg(long, env = "MOAT_SESSION_SECRET", default_value = "change-me-in-production")]
+    pub session_secret: String,
 }

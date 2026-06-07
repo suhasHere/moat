@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::error::AppError;
+use crate::routes::auth::verify_session_token;
 use crate::token::{MintRequest, TokenRole};
 use crate::AppState;
 
@@ -29,28 +30,13 @@ pub async fn mint_token(
     headers: HeaderMap,
     Json(body): Json<MintTokenRequest>,
 ) -> Result<Json<MintTokenResponse>, AppError> {
-    let id_token = extract_bearer(&headers)?;
-
-    let identity = state
-        .idp
-        .verify(&id_token)
-        .await
-        .map_err(|e| AppError::Unauthorized(format!("IdP verification failed: {e}")))?;
-
-    let user = db::upsert_user(
-        state.db.pool(),
-        &identity.email,
-        identity.provider,
-        &identity.subject,
-        identity.name.as_deref(),
-    )
-    .await?;
+    let user_id = authenticate(&headers, &state)?;
 
     let room = db::get_room_by_id(state.db.pool(), body.room_id)
         .await?
         .ok_or_else(|| AppError::NotFound("room not found".into()))?;
 
-    let member_role = db::get_member_role(state.db.pool(), room.id, user.id)
+    let member_role = db::get_member_role(state.db.pool(), room.id, user_id)
         .await?
         .ok_or_else(|| AppError::Forbidden("not a member of this room".into()))?;
 
@@ -62,8 +48,12 @@ pub async fn mint_token(
         .map(|s| s.as_bytes().to_vec())
         .collect();
 
+    let user = db::get_user_by_id(state.db.pool(), user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
     let minted = state.minter.mint(&MintRequest {
-        subject: user.email.clone(),
+        subject: user.email,
         namespace_parts,
         role: token_role,
         lifetime_secs: state.config.token_lifetime_secs,
@@ -76,17 +66,18 @@ pub async fn mint_token(
     }))
 }
 
-fn extract_bearer(headers: &HeaderMap) -> Result<String, AppError> {
+fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Uuid, AppError> {
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::Unauthorized("missing Authorization header".into()))?;
 
-    if !auth.starts_with("Bearer ") {
-        return Err(AppError::Unauthorized("expected Bearer token".into()));
-    }
+    let token = auth
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| AppError::Unauthorized("expected Bearer token".into()))?;
 
-    Ok(auth[7..].to_string())
+    verify_session_token(token, &state.config.session_secret)
+        .ok_or_else(|| AppError::Unauthorized("invalid session token".into()))
 }
 
 fn resolve_role(
