@@ -17,6 +17,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/auth/google", post(auth::google_login))
         // Token minting
         .route("/v1/token", post(token::mint_token))
+        .route("/v1/token/anonymous", post(token::mint_anonymous))
         // Room management
         .route("/v1/rooms", get(rooms::list_rooms).post(rooms::create_room))
         .route("/v1/rooms/:room_id", get(rooms::get_room))
