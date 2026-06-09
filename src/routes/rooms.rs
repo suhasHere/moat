@@ -14,6 +14,7 @@ pub struct CreateRoomRequest {
     pub name: String,
     pub namespace_prefix: String,
     pub visibility: Option<RoomVisibility>,
+    pub creator_id: Option<Uuid>,
 }
 
 pub async fn create_room(
@@ -23,6 +24,11 @@ pub async fn create_room(
     let visibility = body.visibility.unwrap_or(RoomVisibility::Public);
     let room =
         db::create_room(state.db.pool(), &body.name, &body.namespace_prefix, visibility).await?;
+
+    if let Some(creator_id) = body.creator_id {
+        let _ = db::add_room_member(state.db.pool(), room.id, creator_id, MemberRole::Admin).await;
+    }
+
     Ok(Json(room))
 }
 
