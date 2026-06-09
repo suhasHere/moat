@@ -15,15 +15,22 @@ use chrono::Utc;
 
 #[derive(Deserialize)]
 pub struct MintTokenRequest {
-    pub room_id: Uuid,
+    pub room_id: String,
     pub role: Option<TokenRole>,
 }
 
 #[derive(Serialize)]
 pub struct MintTokenResponse {
     pub token: String,
-    pub token_type: u64,
-    pub expires_in: u64,
+    pub expires_at: u64,
+    pub scopes: Vec<MintTokenScope>,
+    pub dpop: bool,
+}
+
+#[derive(Serialize)]
+pub struct MintTokenScope {
+    pub actions: Vec<String>,
+    pub namespace: String,
 }
 
 pub async fn mint_token(
@@ -33,13 +40,23 @@ pub async fn mint_token(
 ) -> Result<Json<MintTokenResponse>, AppError> {
     let user_id = authenticate(&headers, &state)?;
 
-    let room = db::get_room_by_id(state.db.pool(), body.room_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("room not found".into()))?;
+    // Look up room by UUID or name (like anonymous endpoint)
+    let room = if let Ok(room_id) = Uuid::parse_str(&body.room_id) {
+        db::get_room_by_id(state.db.pool(), room_id).await?
+    } else {
+        db::get_room_by_name(state.db.pool(), &body.room_id).await?
+    }
+    .ok_or_else(|| AppError::NotFound("room not found".into()))?;
 
-    let member_role = db::get_member_role(state.db.pool(), room.id, user_id)
-        .await?
-        .ok_or_else(|| AppError::Forbidden("not a member of this room".into()))?;
+    // Auto-join user if not already a member
+    let member_role = match db::get_member_role(state.db.pool(), room.id, user_id).await? {
+        Some(role) => role,
+        None => {
+            db::add_room_member(state.db.pool(), room.id, user_id, db::MemberRole::Publisher)
+                .await?;
+            db::MemberRole::Publisher
+        }
+    };
 
     let token_role = resolve_role(body.role, member_role)?;
 
@@ -60,10 +77,22 @@ pub async fn mint_token(
         lifetime_secs: state.config.token_lifetime_secs,
     })?;
 
+    let expires_at = Utc::now().timestamp() as u64 + minted.expires_in;
+
+    let actions = match token_role {
+        TokenRole::PubSub => vec!["publish".into(), "subscribe".into()],
+        TokenRole::Publisher => vec!["publish".into()],
+        TokenRole::Subscriber => vec!["subscribe".into()],
+    };
+
     Ok(Json(MintTokenResponse {
         token: minted.token,
-        token_type: minted.token_type,
-        expires_in: minted.expires_in,
+        expires_at,
+        scopes: vec![MintTokenScope {
+            actions,
+            namespace: room.namespace_prefix,
+        }],
+        dpop: false,
     }))
 }
 
