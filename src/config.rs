@@ -36,4 +36,8 @@ pub struct Config {
     /// Secret for signing session tokens. Generate with: openssl rand -hex 32
     #[arg(long, env = "MOAT_SESSION_SECRET", default_value = "change-me-in-production")]
     pub session_secret: String,
+
+    /// Base URL for generating invite links (e.g. https://chat.mocha-net.dev)
+    #[arg(long, env = "MOAT_BASE_URL", default_value = "https://chat.mocha-net.dev")]
+    pub base_url: String,
 }

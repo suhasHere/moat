@@ -14,11 +14,21 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "room_visibility", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum RoomVisibility {
+    Public,
+    Authenticated,
+    Private,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct Room {
     pub id: Uuid,
     pub name: String,
     pub namespace_prefix: String,
+    pub visibility: RoomVisibility,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -39,4 +49,16 @@ pub struct RoomMember {
     pub user_id: Uuid,
     pub role: MemberRole,
     pub added_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct RoomInvite {
+    pub id: Uuid,
+    pub room_id: Uuid,
+    pub code: String,
+    pub created_by: Uuid,
+    pub max_uses: Option<i32>,
+    pub use_count: i32,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }

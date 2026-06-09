@@ -1551,6 +1551,7 @@ dependencies = [
  "jsonwebtoken",
  "openidconnect",
  "p256",
+ "rand 0.9.4",
  "reqwest",
  "serde",
  "serde_json",

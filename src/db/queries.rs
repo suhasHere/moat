@@ -1,7 +1,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{MemberRole, Room, RoomMember, User};
+use super::{MemberRole, Room, RoomInvite, RoomMember, RoomVisibility, User};
+use chrono::{DateTime, Utc};
 
 pub async fn upsert_user(
     pool: &PgPool,
@@ -42,17 +43,19 @@ pub async fn create_room(
     pool: &PgPool,
     name: &str,
     namespace_prefix: &str,
+    visibility: super::RoomVisibility,
 ) -> Result<Room, sqlx::Error> {
     sqlx::query_as::<_, Room>(
         r#"
-        INSERT INTO rooms (id, name, namespace_prefix, created_at, updated_at)
-        VALUES ($1, $2, $3, NOW(), NOW())
+        INSERT INTO rooms (id, name, namespace_prefix, visibility, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, NOW(), NOW())
         RETURNING *
         "#,
     )
     .bind(Uuid::new_v4())
     .bind(name)
     .bind(namespace_prefix)
+    .bind(visibility)
     .fetch_one(pool)
     .await
 }
@@ -137,4 +140,44 @@ pub async fn remove_room_member(
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)
+}
+
+pub async fn create_invite(
+    pool: &PgPool,
+    room_id: Uuid,
+    code: &str,
+    created_by: Uuid,
+    max_uses: Option<i32>,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<RoomInvite, sqlx::Error> {
+    sqlx::query_as::<_, RoomInvite>(
+        r#"
+        INSERT INTO room_invites (id, room_id, code, created_by, max_uses, expires_at, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        RETURNING *
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(room_id)
+    .bind(code)
+    .bind(created_by)
+    .bind(max_uses)
+    .bind(expires_at)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn get_invite_by_code(pool: &PgPool, code: &str) -> Result<Option<RoomInvite>, sqlx::Error> {
+    sqlx::query_as::<_, RoomInvite>("SELECT * FROM room_invites WHERE code = $1")
+        .bind(code)
+        .fetch_optional(pool)
+        .await
+}
+
+pub async fn increment_invite_use(pool: &PgPool, invite_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE room_invites SET use_count = use_count + 1 WHERE id = $1")
+        .bind(invite_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }

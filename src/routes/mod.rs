@@ -1,4 +1,5 @@
 pub mod auth;
+mod invites;
 mod rooms;
 mod token;
 mod web;
@@ -29,6 +30,12 @@ pub fn router() -> Router<Arc<AppState>> {
             "/v1/rooms/:room_id/members/:user_id",
             axum::routing::delete(rooms::remove_member),
         )
+        // Invites
+        .route(
+            "/v1/rooms/:room_id/invites",
+            post(invites::create_invite),
+        )
+        .route("/v1/invites/:code/redeem", post(invites::redeem_invite))
         // Web UI
         .route("/", get(web::index))
         .route("/app.js", get(web::app_js))

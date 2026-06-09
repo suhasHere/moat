@@ -5,7 +5,7 @@ use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::db::{self, MemberRole};
+use crate::db::{self, MemberRole, RoomVisibility};
 use crate::error::AppError;
 use crate::AppState;
 
@@ -13,13 +13,16 @@ use crate::AppState;
 pub struct CreateRoomRequest {
     pub name: String,
     pub namespace_prefix: String,
+    pub visibility: Option<RoomVisibility>,
 }
 
 pub async fn create_room(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateRoomRequest>,
 ) -> Result<Json<db::Room>, AppError> {
-    let room = db::create_room(state.db.pool(), &body.name, &body.namespace_prefix).await?;
+    let visibility = body.visibility.unwrap_or(RoomVisibility::Public);
+    let room =
+        db::create_room(state.db.pool(), &body.name, &body.namespace_prefix, visibility).await?;
     Ok(Json(room))
 }
 

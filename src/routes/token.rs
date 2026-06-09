@@ -6,7 +6,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::db;
+use crate::db::{self, RoomVisibility};
 use crate::error::AppError;
 use crate::routes::auth::verify_session_token;
 use crate::token::{MintRequest, TokenRole};
@@ -48,10 +48,20 @@ pub async fn mint_token(
     }
     .ok_or_else(|| AppError::NotFound("room not found".into()))?;
 
-    // Auto-join user if not already a member
-    let member_role = match db::get_member_role(state.db.pool(), room.id, user_id).await? {
-        Some(role) => role,
-        None => {
+    // Enforce visibility rules
+    let existing_role = db::get_member_role(state.db.pool(), room.id, user_id).await?;
+    let member_role = match (room.visibility, existing_role) {
+        // Already a member — always allowed
+        (_, Some(role)) => role,
+        // Private rooms require explicit membership
+        (RoomVisibility::Private, None) => {
+            return Err(AppError::Forbidden(
+                "this is a private room — you need an invite link or to be added by a member"
+                    .into(),
+            ));
+        }
+        // Public or authenticated — auto-join
+        (_, None) => {
             db::add_room_member(state.db.pool(), room.id, user_id, db::MemberRole::Publisher)
                 .await?;
             db::MemberRole::Publisher
@@ -142,6 +152,22 @@ pub async fn mint_anonymous(
         db::get_room_by_name(state.db.pool(), &body.room_id).await?
     }
     .ok_or_else(|| AppError::NotFound("room not found".into()))?;
+
+    // Guests can only join public rooms
+    match room.visibility {
+        RoomVisibility::Authenticated => {
+            return Err(AppError::Forbidden(
+                "this room requires sign-in — please log in with Google to join".into(),
+            ));
+        }
+        RoomVisibility::Private => {
+            return Err(AppError::Forbidden(
+                "this is a private room — you need an invite link or to be added by a member"
+                    .into(),
+            ));
+        }
+        RoomVisibility::Public => {}
+    }
 
     // Auto-join as pubsub (guests get full access for demo purposes)
     let role = match body.role.as_deref() {
