@@ -157,7 +157,7 @@ pub async fn mint_anonymous(
     match room.visibility {
         RoomVisibility::Authenticated => {
             return Err(AppError::Forbidden(
-                "this room requires sign-in — please log in with Google to join".into(),
+                "this room requires sign-in — please log in with your identity provider to join".into(),
             ));
         }
         RoomVisibility::Private => {
