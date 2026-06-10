@@ -11,63 +11,95 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 use crate::AppState;
 
+const TOKEN_TYPE_BLIND_RSA: u16 = 0x0002;
+const TOKEN_TYPE_PARTIALLY_BLIND_RSA: u16 = 0xda7a;
+const EXTENSION_TYPE_MOQ_ACTIONS: u16 = 0x0001;
+
 #[derive(Deserialize)]
 pub struct ChallengeRequest {
     pub room_id: Option<String>,
+    pub token_type: Option<u16>,
 }
 
 #[derive(Serialize)]
 pub struct ChallengeResponse {
+    pub token_type: u16,
     pub token_challenge: String,
     pub issuer_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<String>,
 }
 
 /// POST /v1/auth/privacypass/challenge
 ///
 /// Returns a TokenChallenge (RFC 9578 §2.1) and the issuer's public key.
-/// The client uses these to obtain a Privacy Pass token from the issuer,
-/// which it then presents to the relay as its AUTH_TOKEN.
+/// For PBRS (0xda7a), also returns serialized extensions with MoQ action scope.
 pub async fn challenge(
     State(state): State<Arc<AppState>>,
-    Json(_body): Json<ChallengeRequest>,
+    Json(body): Json<ChallengeRequest>,
 ) -> Result<Json<ChallengeResponse>, AppError> {
-    // Build TokenChallenge per RFC 9578 §2.1:
-    //   struct {
-    //     uint16 token_type;             // 0x0002 for public tokens
-    //     opaque issuer_name<1..2^16-1>;
-    //     opaque redemption_context<0..32>;
-    //     opaque origin_info<0..2^16-1>;
-    //   } TokenChallenge;
-    let token_type: u16 = 0x0002;
+    let token_type = body.token_type.unwrap_or(TOKEN_TYPE_PARTIALLY_BLIND_RSA);
+
     let issuer_name = state.config.pp_issuer_name.as_bytes();
     let origin_info = state.config.pp_origin_name.as_bytes();
 
     let mut redemption_context = [0u8; 32];
     rand::rng().fill_bytes(&mut redemption_context);
 
+    // Build TokenChallenge per RFC 9578 §2.1
     let mut challenge = Vec::new();
-    // token_type (2 bytes)
     challenge.extend_from_slice(&token_type.to_be_bytes());
-    // issuer_name length-prefixed (2 bytes length)
     challenge.extend_from_slice(&(issuer_name.len() as u16).to_be_bytes());
     challenge.extend_from_slice(issuer_name);
-    // redemption_context (1 byte length + 32 bytes)
     challenge.push(32u8);
     challenge.extend_from_slice(&redemption_context);
-    // origin_info length-prefixed (2 bytes length)
     challenge.extend_from_slice(&(origin_info.len() as u16).to_be_bytes());
     challenge.extend_from_slice(origin_info);
 
-    // Fetch issuer public key from the issuer directory
-    let issuer_key = fetch_issuer_key(&state.config.pp_issuer_url).await?;
+    // Fetch the appropriate issuer key
+    let issuer_key = fetch_issuer_key(&state.config.pp_issuer_url, token_type).await?;
+
+    // For PBRS, build extensions with MoQ action scope
+    let extensions = if token_type == TOKEN_TYPE_PARTIALLY_BLIND_RSA {
+        let room_id = body.room_id.as_deref().unwrap_or("*");
+        let ext_bytes = build_moq_extensions(room_id);
+        Some(URL_SAFE_NO_PAD.encode(&ext_bytes))
+    } else {
+        None
+    };
 
     Ok(Json(ChallengeResponse {
+        token_type,
         token_challenge: URL_SAFE_NO_PAD.encode(&challenge),
         issuer_key: URL_SAFE_NO_PAD.encode(&issuer_key),
+        extensions,
     }))
 }
 
-async fn fetch_issuer_key(issuer_url: &str) -> Result<Vec<u8>, AppError> {
+/// Build Privacy Pass Extensions carrying MoQ action scope.
+/// Format: extensions_length(2) + [extension_type(2) + extension_data_length(2) + data]*
+fn build_moq_extensions(room_id: &str) -> Vec<u8> {
+    // Extension data: JSON-encoded MoQ action scope
+    let scope = serde_json::json!({
+        "pub": [format!("mocha/*/{}/*", room_id)],
+        "sub": [format!("mocha/*/{}/*", room_id)],
+    });
+    let ext_data = serde_json::to_vec(&scope).unwrap();
+
+    // Single extension: type(2) + data_length(2) + data
+    let mut ext = Vec::new();
+    ext.extend_from_slice(&EXTENSION_TYPE_MOQ_ACTIONS.to_be_bytes());
+    ext.extend_from_slice(&(ext_data.len() as u16).to_be_bytes());
+    ext.extend_from_slice(&ext_data);
+
+    // Wrap in extensions envelope: total_length(2) + extensions
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+    envelope.extend_from_slice(&ext);
+    envelope
+}
+
+async fn fetch_issuer_key(issuer_url: &str, token_type: u16) -> Result<Vec<u8>, AppError> {
     let url = format!("{}/.well-known/private-token-issuer-directory", issuer_url);
     let res = reqwest::get(&url)
         .await
@@ -85,13 +117,12 @@ async fn fetch_issuer_key(issuer_url: &str) -> Result<Vec<u8>, AppError> {
         .await
         .map_err(|e| AppError::Internal(anyhow!("Failed to parse issuer directory: {e}")))?;
 
-    // Find the token-key for type 0x0002 (Blind RSA)
     let keys = body["token-keys"]
         .as_array()
         .ok_or_else(|| AppError::Internal(anyhow!("No token-keys in issuer directory")))?;
 
     for key in keys {
-        if key["token-type"].as_u64() == Some(0x0002) {
+        if key["token-type"].as_u64() == Some(token_type as u64) {
             let key_b64 = key["token-key"]
                 .as_str()
                 .ok_or_else(|| AppError::Internal(anyhow!("token-key not a string")))?;
@@ -104,7 +135,8 @@ async fn fetch_issuer_key(issuer_url: &str) -> Result<Vec<u8>, AppError> {
     }
 
     Err(AppError::Internal(anyhow!(
-        "No public token key (0x0002) found in issuer directory"
+        "No token key for type 0x{:04x} found in issuer directory",
+        token_type
     )))
 }
 
