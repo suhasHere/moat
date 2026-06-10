@@ -107,3 +107,35 @@ async fn fetch_issuer_key(issuer_url: &str) -> Result<Vec<u8>, AppError> {
         "No public token key (0x0002) found in issuer directory"
     )))
 }
+
+/// POST /v1/auth/privacypass/token-request
+///
+/// Proxies the token request to the issuer (avoids CORS issues in browsers).
+/// Client sends raw token request bytes, we forward to issuer and return response.
+pub async fn token_request_proxy(
+    State(state): State<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, AppError> {
+    let url = format!("{}/token-request", state.config.pp_issuer_url);
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post(&url)
+        .header("Content-Type", "message/token-request")
+        .body(body.to_vec())
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(anyhow!("Issuer request failed: {e}")))?;
+
+    let status = res.status();
+    let response_bytes = res
+        .bytes()
+        .await
+        .map_err(|e| AppError::Internal(anyhow!("Failed to read issuer response: {e}")))?;
+
+    Ok(axum::response::Response::builder()
+        .status(status.as_u16())
+        .header("Content-Type", "message/token-response")
+        .body(axum::body::Body::from(response_bytes.to_vec()))
+        .unwrap())
+}

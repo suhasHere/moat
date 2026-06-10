@@ -18,6 +18,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/auth/guest", post(auth::guest_login))
         .route("/v1/auth/google", post(auth::google_login))
         .route("/v1/auth/privacypass/challenge", post(privacypass::challenge))
+        .route("/v1/auth/privacypass/token-request", post(privacypass::token_request_proxy))
         // Token minting
         .route("/v1/token", post(token::mint_token))
         .route("/v1/token/anonymous", post(token::mint_anonymous))
