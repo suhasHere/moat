@@ -42,11 +42,11 @@ pub struct Config {
     pub base_url: String,
 
     /// Privacy Pass issuer name (for TokenChallenge construction).
-    #[arg(long, env = "MOAT_PP_ISSUER_NAME", default_value = "demo-pat.issuer.cloudflare.com")]
+    #[arg(long, env = "MOAT_PP_ISSUER_NAME", default_value = "pat.issuer.mocha-net.dev")]
     pub pp_issuer_name: String,
 
     /// Privacy Pass issuer directory URL (to fetch public keys).
-    #[arg(long, env = "MOAT_PP_ISSUER_URL", default_value = "https://demo-pat.issuer.cloudflare.com")]
+    #[arg(long, env = "MOAT_PP_ISSUER_URL", default_value = "https://pat.issuer.mocha-net.dev")]
     pub pp_issuer_url: String,
 
     /// Privacy Pass origin name (relay hostname for challenge scope).
