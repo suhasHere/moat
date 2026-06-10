@@ -1,0 +1,23 @@
+[package]
+name = "pp-issuer"
+version = "0.1.0"
+edition = "2021"
+description = "Privacy Pass token issuer supporting Blind RSA (0x0002) and Partially Blind RSA (0xda7a)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+axum = { version = "0.7", features = ["tokio", "json"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+blind-rsa-signatures = "0.17"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+rand = "0.9"
+
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
