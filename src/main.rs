@@ -22,6 +22,7 @@ pub struct AppState {
     pub idp: IdpRegistry,
     pub minter: MinterRegistry,
     pub config: Config,
+    pub pp_signing_key: Option<ed25519_dalek::SigningKey>,
 }
 
 #[tokio::main]
@@ -41,11 +42,21 @@ async fn main() -> anyhow::Result<()> {
     let idp = IdpRegistry::from_config(&config).await?;
     let minter = MinterRegistry::from_config(&config)?;
 
+    let pp_signing_key = if let Some(path) = &config.pp_signing_key {
+        let pem = std::fs::read_to_string(path)?;
+        let sk = load_ed25519_signing_key(&pem)?;
+        tracing::info!("PP attester signing key loaded");
+        Some(sk)
+    } else {
+        None
+    };
+
     let state = Arc::new(AppState {
         db,
         idp,
         minter,
         config: config.clone(),
+        pp_signing_key,
     });
 
     let app = Router::new()
@@ -59,4 +70,10 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn load_ed25519_signing_key(pem: &str) -> anyhow::Result<ed25519_dalek::SigningKey> {
+    use ed25519_dalek::pkcs8::DecodePrivateKey;
+    ed25519_dalek::SigningKey::from_pkcs8_pem(pem)
+        .map_err(|e| anyhow::anyhow!("failed to load Ed25519 signing key: {e}"))
 }

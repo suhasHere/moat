@@ -4,17 +4,18 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use blind_rsa_signatures::pbrsa::{
     DefaultRng, PartiallyBlindKeyPair, PartiallyBlindPublicKey, PartiallyBlindSecretKey,
 };
 use blind_rsa_signatures::{Deterministic, KeyPair, PublicKey, SecretKey, Sha384, PSSZero};
 use clap::Parser;
+use ed25519_dalek::{Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use tower_http::cors::CorsLayer;
 
@@ -37,6 +38,11 @@ struct Cli {
 
     #[arg(long, env = "PP_KEY_DIR", default_value = "/opt/pp-issuer/keys")]
     key_dir: PathBuf,
+
+    /// Path to the Attester's Ed25519 public key (PEM). If set, /token-request
+    /// requires a valid RFC 9421 HTTP Message Signature from this key.
+    #[arg(long, env = "PP_ATTESTER_KEY")]
+    attester_key: Option<PathBuf>,
 }
 
 struct IssuerState {
@@ -47,6 +53,8 @@ struct IssuerState {
     pbrs_kp: PbKp,
     pbrs_pk_spki: Vec<u8>,
     pbrs_key_id: [u8; 32],
+
+    attester_verifying_key: Option<VerifyingKey>,
 }
 
 #[tokio::main]
@@ -61,7 +69,19 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     std::fs::create_dir_all(&cli.key_dir)?;
 
-    let state = Arc::new(load_or_generate_keys(&cli.key_dir)?);
+    let attester_verifying_key = if let Some(path) = &cli.attester_key {
+        let pem = std::fs::read_to_string(path)?;
+        let vk = load_ed25519_public_key(&pem)?;
+        tracing::info!("attester signature verification enabled");
+        Some(vk)
+    } else {
+        tracing::warn!("no --attester-key set: /token-request is unauthenticated");
+        None
+    };
+
+    let mut issuer_state = load_or_generate_keys(&cli.key_dir)?;
+    issuer_state.attester_verifying_key = attester_verifying_key;
+    let state = Arc::new(issuer_state);
 
     let app = Router::new()
         .route(
@@ -76,6 +96,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(cli.bind).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn load_ed25519_public_key(pem: &str) -> anyhow::Result<VerifyingKey> {
+    use ed25519_dalek::pkcs8::DecodePublicKey;
+    VerifyingKey::from_public_key_pem(pem)
+        .map_err(|e| anyhow::anyhow!("failed to load attester Ed25519 key: {e}"))
 }
 
 fn load_or_generate_keys(key_dir: &PathBuf) -> anyhow::Result<IssuerState> {
@@ -128,6 +154,7 @@ fn load_or_generate_keys(key_dir: &PathBuf) -> anyhow::Result<IssuerState> {
         pbrs_kp,
         pbrs_pk_spki,
         pbrs_key_id,
+        attester_verifying_key: None,
     })
 }
 
@@ -167,7 +194,19 @@ async fn issuer_directory(State(state): State<Arc<IssuerState>>) -> Json<IssuerD
     })
 }
 
-async fn token_request(State(state): State<Arc<IssuerState>>, body: Bytes) -> Response {
+async fn token_request(
+    State(state): State<Arc<IssuerState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    // Verify attester signature if configured (RFC 9421)
+    if let Some(vk) = &state.attester_verifying_key {
+        if let Err(e) = verify_http_signature(&headers, &body, vk) {
+            tracing::warn!("attester signature rejected: {e}");
+            return (StatusCode::UNAUTHORIZED, format!("signature verification failed: {e}")).into_response();
+        }
+    }
+
     if body.len() < 3 {
         return (StatusCode::BAD_REQUEST, "request too short").into_response();
     }
@@ -189,6 +228,57 @@ async fn token_request(State(state): State<Arc<IssuerState>>, body: Bytes) -> Re
         )
             .into_response(),
     }
+}
+
+/// Verify RFC 9421 HTTP Message Signature.
+/// Simplified: covers Content-Digest header (SHA-256 of body).
+/// Signature-Input: sig1=("content-digest");alg="ed25519";keyid="attester"
+/// Signature: sig1=:<base64 of Ed25519 signature over signature base>:
+fn verify_http_signature(
+    headers: &HeaderMap,
+    body: &[u8],
+    vk: &VerifyingKey,
+) -> Result<(), String> {
+    let sig_input = headers.get("signature-input")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("missing Signature-Input header")?;
+
+    let signature_header = headers.get("signature")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("missing Signature header")?;
+
+    let content_digest = headers.get("content-digest")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("missing Content-Digest header")?;
+
+    // Verify Content-Digest matches body
+    let body_hash = Sha256::digest(body);
+    let expected_digest = format!("sha-256=:{}:", STANDARD.encode(body_hash));
+    if content_digest != expected_digest {
+        return Err("Content-Digest mismatch".to_string());
+    }
+
+    // Build signature base per RFC 9421 §2.5
+    // "content-digest": <value>\n
+    // "@signature-params": <sig_input_params>
+    let params = sig_input.strip_prefix("sig1=").ok_or("bad Signature-Input format")?;
+    let sig_base = format!(
+        "\"content-digest\": {}\n\"@signature-params\": {}",
+        content_digest, params
+    );
+
+    // Extract signature bytes
+    let sig_b64 = signature_header
+        .strip_prefix("sig1=:")
+        .and_then(|s| s.strip_suffix(':'))
+        .ok_or("bad Signature header format")?;
+    let sig_bytes = STANDARD.decode(sig_b64).map_err(|e| format!("bad signature encoding: {e}"))?;
+
+    let signature = ed25519_dalek::Signature::from_slice(&sig_bytes)
+        .map_err(|e| format!("invalid signature: {e}"))?;
+
+    vk.verify(sig_base.as_bytes(), &signature)
+        .map_err(|_| "signature verification failed".to_string())
 }
 
 fn sign_blind_rsa(

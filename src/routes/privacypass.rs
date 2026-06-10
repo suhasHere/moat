@@ -3,10 +3,12 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use axum::extract::State;
 use axum::Json;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+use ed25519_dalek::Signer;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::AppError;
 use crate::AppState;
@@ -143,18 +145,39 @@ async fn fetch_issuer_key(issuer_url: &str, token_type: u16) -> Result<Vec<u8>, 
 /// POST /v1/auth/privacypass/token-request
 ///
 /// Proxies the token request to the issuer (avoids CORS issues in browsers).
-/// Client sends raw token request bytes, we forward to issuer and return response.
+/// Signs the request with RFC 9421 HTTP Message Signatures if a signing key is configured.
 pub async fn token_request_proxy(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, AppError> {
     let url = format!("{}/token-request", state.config.pp_issuer_url);
+    let body_bytes = body.to_vec();
 
     let client = reqwest::Client::new();
-    let res = client
+    let mut req = client
         .post(&url)
-        .header("Content-Type", "application/private-token-request")
-        .body(body.to_vec())
+        .header("Content-Type", "application/private-token-request");
+
+    // Sign the request if we have an attester signing key
+    if let Some(signing_key) = &state.pp_signing_key {
+        let content_digest = format!("sha-256=:{}:", STANDARD.encode(Sha256::digest(&body_bytes)));
+        let sig_params = r#"("content-digest");alg="ed25519";keyid="attester""#;
+        let sig_base = format!(
+            "\"content-digest\": {}\n\"@signature-params\": {}",
+            content_digest, sig_params
+        );
+
+        let signature = signing_key.sign(sig_base.as_bytes());
+        let sig_b64 = STANDARD.encode(signature.to_bytes());
+
+        req = req
+            .header("Content-Digest", &content_digest)
+            .header("Signature-Input", format!("sig1={}", sig_params))
+            .header("Signature", format!("sig1=:{}:", sig_b64));
+    }
+
+    let res = req
+        .body(body_bytes)
         .send()
         .await
         .map_err(|e| AppError::Internal(anyhow!("Issuer request failed: {e}")))?;

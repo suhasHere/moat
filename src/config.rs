@@ -52,4 +52,8 @@ pub struct Config {
     /// Privacy Pass origin name (relay hostname for challenge scope).
     #[arg(long, env = "MOAT_PP_ORIGIN_NAME", default_value = "relay.mocha-net.dev")]
     pub pp_origin_name: String,
+
+    /// Path to Ed25519 private key PEM for signing token requests to the issuer (RFC 9421).
+    #[arg(long, env = "MOAT_PP_SIGNING_KEY")]
+    pub pp_signing_key: Option<PathBuf>,
 }
