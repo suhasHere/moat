@@ -1,5 +1,6 @@
 pub mod auth;
 mod invites;
+pub mod privacypass;
 mod rooms;
 mod token;
 mod web;
@@ -16,6 +17,7 @@ pub fn router() -> Router<Arc<AppState>> {
         // Auth
         .route("/v1/auth/guest", post(auth::guest_login))
         .route("/v1/auth/google", post(auth::google_login))
+        .route("/v1/auth/privacypass/challenge", post(privacypass::challenge))
         // Token minting
         .route("/v1/token", post(token::mint_token))
         .route("/v1/token/anonymous", post(token::mint_anonymous))
