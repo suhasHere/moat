@@ -121,7 +121,7 @@ pub async fn token_request_proxy(
     let client = reqwest::Client::new();
     let res = client
         .post(&url)
-        .header("Content-Type", "message/token-request")
+        .header("Content-Type", "application/private-token-request")
         .body(body.to_vec())
         .send()
         .await
@@ -135,7 +135,7 @@ pub async fn token_request_proxy(
 
     Ok(axum::response::Response::builder()
         .status(status.as_u16())
-        .header("Content-Type", "message/token-response")
+        .header("Content-Type", "application/private-token-response")
         .body(axum::body::Body::from(response_bytes.to_vec()))
         .unwrap())
 }
