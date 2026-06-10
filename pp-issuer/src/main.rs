@@ -270,10 +270,12 @@ fn sign_pbrs(
     // The full serialized extensions (including the 2-byte length prefix)
     let extensions_bytes = &body[ext_offset..ext_total];
 
-    tracing::debug!(
-        "PBRS sign: blinded_msg={}B, extensions={}B",
+    tracing::info!(
+        "PBRS sign: body={}B, blinded_msg={}B, extensions={}B, ext_hex={:02x?}",
+        body.len(),
         blinded_msg.len(),
-        extensions_bytes.len()
+        extensions_bytes.len(),
+        &extensions_bytes[..std::cmp::min(extensions_bytes.len(), 20)]
     );
 
     // Derive signing key for this metadata
