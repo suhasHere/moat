@@ -1,12 +1,14 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use cat_token::{CatTokenBuilder, CryptographicAlgorithm, Es256Algorithm, MoqtAction, MoqtScopeBuilder};
+use cat_token::{CatTokenBuilder, CryptographicAlgorithm, Es256Algorithm};
+use ciborium::Value;
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use p256::pkcs8::DecodePrivateKey;
 
 use super::{MintRequest, MintedToken, TokenMinter, TokenRole};
 
 const C4M_TOKEN_TYPE: u64 = 6501485;
+const CLAIM_MOQT: i64 = 65000;
 
 pub struct C4mMinter {
     signing_key: Es256Algorithm,
@@ -46,48 +48,37 @@ impl TokenMinter for C4mMinter {
             self.default_lifetime
         };
 
-        let setup_scope = MoqtScopeBuilder::new()
-            .action(MoqtAction::ClientSetup)
-            .build();
+        // The relay canonicalizes namespaces as [4-byte-BE-len][field]... for each element,
+        // then applies match rules against that single byte string.
+        let canonical_ns = canonical_namespace(&request.namespace_parts);
 
-        let mut scopes = vec![setup_scope];
+        let mut moqt_scopes: Vec<Value> = Vec::new();
 
-        match request.role {
-            TokenRole::Publisher | TokenRole::PubSub => {
-                let mut builder = MoqtScopeBuilder::new().publisher();
-                for part in &request.namespace_parts {
-                    builder = builder.namespace_prefix(part);
-                }
-                scopes.push(builder.track_prefix(b"").build());
-            }
-            _ => {}
+        // Scope 0: ClientSetup (no namespace constraint)
+        moqt_scopes.push(Value::Array(vec![
+            Value::Array(vec![Value::Integer(0.into())]),
+        ]));
+
+        // Publisher scope: actions [2 (PublishNamespace), 6 (Publish)]
+        if matches!(request.role, TokenRole::Publisher | TokenRole::PubSub) {
+            moqt_scopes.push(build_scope(&[2, 6], &canonical_ns));
         }
 
-        match request.role {
-            TokenRole::Subscriber | TokenRole::PubSub => {
-                let mut builder = MoqtScopeBuilder::new().subscriber();
-                for part in &request.namespace_parts {
-                    builder = builder.namespace_prefix(part);
-                }
-                scopes.push(builder.track_prefix(b"").build());
-            }
-            _ => {}
+        // Subscriber scope: actions [3 (SubscribeNamespace), 4 (Subscribe), 7 (Fetch)]
+        if matches!(request.role, TokenRole::Subscriber | TokenRole::PubSub) {
+            moqt_scopes.push(build_scope(&[3, 4, 7], &canonical_ns));
         }
 
-        let mut token_builder = CatTokenBuilder::new()
+        // Build base token (without MoQT scopes — we inject those manually)
+        let token = CatTokenBuilder::new()
             .issuer(&self.issuer)
             .single_audience(&self.audience)
             .subject(&request.subject)
-            .expires_in(lifetime as i64);
+            .expires_in(lifetime as i64)
+            .build();
 
-        for scope in scopes {
-            token_builder = token_builder.moqt_scope(scope);
-        }
-
-        let token = token_builder.build();
-
-        // Encode as standard COSE_Sign1 CBOR (compatible with catapult/moxygen relay)
-        let token_string = encode_cose_sign1(&token, &self.signing_key, &self.raw_signing_key)?;
+        let token_string =
+            encode_cose_sign1(&token, &self.signing_key, &self.raw_signing_key, &moqt_scopes)?;
 
         Ok(MintedToken {
             token: token_string,
@@ -101,16 +92,38 @@ impl TokenMinter for C4mMinter {
     }
 }
 
-/// Encode a CatToken as base64url(COSE_Sign1 CBOR).
-/// COSE_Sign1 = [protected_header_bstr, unprotected_header_map, payload_bstr, signature_bstr]
-/// Signing input = Sig_structure = ["Signature1", protected_header_bstr, external_aad, payload_bstr]
+/// Build a scope entry: [[actions...], [ns_prefix_match], track_match]
+fn build_scope(actions: &[i64], canonical_ns: &[u8]) -> Value {
+    let actions_arr = Value::Array(actions.iter().map(|&a| Value::Integer(a.into())).collect());
+    // Single prefix match on the canonical namespace bytes
+    let ns_match = Value::Array(vec![Value::Array(vec![
+        Value::Integer(1.into()), // PREFIX match type
+        Value::Bytes(canonical_ns.to_vec()),
+    ])]);
+    // Empty track match = matches any track
+    let track_match = Value::Bytes(vec![]);
+    Value::Array(vec![actions_arr, ns_match, track_match])
+}
+
+/// Encode namespace parts as the relay's canonical form: [4-byte-BE-len][bytes]...
+fn canonical_namespace(parts: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for part in parts {
+        let len = part.len() as u32;
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(part);
+    }
+    out
+}
+
+/// Encode a CatToken + MoQT scopes as base64url(COSE_Sign1 CBOR).
 fn encode_cose_sign1(
     token: &cat_token::CatToken,
     algorithm: &Es256Algorithm,
     raw_key: &SigningKey,
+    moqt_scopes: &[Value],
 ) -> anyhow::Result<String> {
     use cat_token::Cwt;
-    use ciborium::Value;
 
     let alg_id = algorithm.algorithm_id();
 
@@ -131,19 +144,15 @@ fn encode_cose_sign1(
     ciborium::ser::into_writer(&Value::Map(header_cbor_map), &mut protected_header)
         .map_err(|e| anyhow::anyhow!("header CBOR encode failed: {e}"))?;
 
-    // Build payload CBOR, then fix CLAIM_MOQT key (cat-token uses 327, catapult expects 65000)
-    let payload_raw = cwt
-        .encode_payload()
-        .map_err(|e| anyhow::anyhow!("payload encode failed: {e}"))?;
+    // Build payload: use cat-token for standard CWT claims, then inject MoQT scopes
+    let payload = build_payload(&cwt, moqt_scopes)?;
 
-    let payload = remap_claim_key(&payload_raw, 327, 65000)?;
-
-    // Build COSE Sig_structure for COSE_Sign1:
-    // ["Signature1", protected_header_bstr, external_aad_bstr, payload_bstr]
+    // Build COSE Sig_structure for signing:
+    // ["Signature1", bstr(protected_header), bstr(external_aad), bstr(payload)]
     let sig_structure = Value::Array(vec![
         Value::Text("Signature1".to_string()),
         Value::Bytes(protected_header.clone()),
-        Value::Bytes(vec![]), // empty external AAD
+        Value::Bytes(vec![]),
         Value::Bytes(payload.clone()),
     ]);
 
@@ -151,15 +160,14 @@ fn encode_cose_sign1(
     ciborium::ser::into_writer(&sig_structure, &mut signing_input)
         .map_err(|e| anyhow::anyhow!("sig_structure CBOR encode failed: {e}"))?;
 
-    // Sign with ES256 (P-256 ECDSA) — output DER-encoded signature for OpenSSL compatibility
+    // Sign with ES256 — DER-encoded for OpenSSL compatibility
     let signature: Signature = raw_key.sign(&signing_input);
     let sig_der = signature.to_der();
 
-    // Build COSE_Sign1 structure:
-    // [bstr(protected_header), map(unprotected_header), bstr(payload), bstr(signature)]
+    // COSE_Sign1 = [bstr(protected), map(unprotected), bstr(payload), bstr(signature)]
     let cose_sign1 = Value::Array(vec![
         Value::Bytes(protected_header),
-        Value::Map(vec![]), // empty unprotected header
+        Value::Map(vec![]),
         Value::Bytes(payload),
         Value::Bytes(sig_der.as_bytes().to_vec()),
     ]);
@@ -168,39 +176,37 @@ fn encode_cose_sign1(
     ciborium::ser::into_writer(&cose_sign1, &mut cose_bytes)
         .map_err(|e| anyhow::anyhow!("COSE_Sign1 CBOR encode failed: {e}"))?;
 
-    // Return as base64url (single blob, no dots)
     Ok(URL_SAFE_NO_PAD.encode(&cose_bytes))
 }
 
-/// Decode a CBOR map, rename key `from` to `to`, and bstr-wrap its value
-/// (catapult expects the MoQT claim as a bytestring containing CBOR).
-fn remap_claim_key(cbor: &[u8], from: i64, to: i64) -> anyhow::Result<Vec<u8>> {
-    use ciborium::Value;
+/// Build the CWT payload CBOR map with standard claims + MoQT scopes (key 65000, bstr-wrapped).
+fn build_payload(cwt: &cat_token::Cwt, moqt_scopes: &[Value]) -> anyhow::Result<Vec<u8>> {
+    // Get base claims from cat-token (excludes MoQT since we didn't add any scopes to token)
+    let base_raw = cwt
+        .encode_payload()
+        .map_err(|e| anyhow::anyhow!("payload encode failed: {e}"))?;
 
-    let value: Value = ciborium::de::from_reader(cbor)
-        .map_err(|e| anyhow::anyhow!("CBOR decode for key remap failed: {e}"))?;
+    let base: Value = ciborium::de::from_reader(&base_raw[..])
+        .map_err(|e| anyhow::anyhow!("CBOR decode payload failed: {e}"))?;
 
-    let map = match value {
+    let mut map = match base {
         Value::Map(entries) => entries,
         _ => anyhow::bail!("expected CBOR map in payload"),
     };
 
-    let remapped: Vec<(Value, Value)> = map
-        .into_iter()
-        .map(|(k, v)| {
-            if k == Value::Integer(from.into()) {
-                // Serialize the array value to CBOR bytes, then wrap as bstr
-                let mut inner = Vec::new();
-                ciborium::ser::into_writer(&v, &mut inner).unwrap();
-                (Value::Integer(to.into()), Value::Bytes(inner))
-            } else {
-                (k, v)
-            }
-        })
-        .collect();
+    // Encode MoQT scopes array to bytes, then add as bstr under key 65000
+    let scopes_value = Value::Array(moqt_scopes.to_vec());
+    let mut scopes_bytes = Vec::new();
+    ciborium::ser::into_writer(&scopes_value, &mut scopes_bytes)
+        .map_err(|e| anyhow::anyhow!("MoQT scopes CBOR encode failed: {e}"))?;
+
+    map.push((
+        Value::Integer(CLAIM_MOQT.into()),
+        Value::Bytes(scopes_bytes),
+    ));
 
     let mut out = Vec::new();
-    ciborium::ser::into_writer(&Value::Map(remapped), &mut out)
-        .map_err(|e| anyhow::anyhow!("CBOR re-encode after key remap failed: {e}"))?;
+    ciborium::ser::into_writer(&Value::Map(map), &mut out)
+        .map_err(|e| anyhow::anyhow!("payload CBOR encode failed: {e}"))?;
     Ok(out)
 }
