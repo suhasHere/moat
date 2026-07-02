@@ -149,9 +149,9 @@ fn encode_cose_sign1(
     ciborium::ser::into_writer(&sig_structure, &mut signing_input)
         .map_err(|e| anyhow::anyhow!("sig_structure CBOR encode failed: {e}"))?;
 
-    // Sign with ES256 (P-256 ECDSA)
+    // Sign with ES256 (P-256 ECDSA) — output DER-encoded signature for OpenSSL compatibility
     let signature: Signature = raw_key.sign(&signing_input);
-    let sig_bytes = signature.to_bytes();
+    let sig_der = signature.to_der();
 
     // Build COSE_Sign1 structure:
     // [bstr(protected_header), map(unprotected_header), bstr(payload), bstr(signature)]
@@ -159,7 +159,7 @@ fn encode_cose_sign1(
         Value::Bytes(protected_header),
         Value::Map(vec![]), // empty unprotected header
         Value::Bytes(payload),
-        Value::Bytes(sig_bytes.to_vec()),
+        Value::Bytes(sig_der.as_bytes().to_vec()),
     ]);
 
     let mut cose_bytes = Vec::new();
