@@ -172,7 +172,8 @@ fn encode_cose_sign1(
     Ok(URL_SAFE_NO_PAD.encode(&cose_bytes))
 }
 
-/// Decode a CBOR map, rename one integer key, and re-encode.
+/// Decode a CBOR map, rename key `from` to `to`, and bstr-wrap its value
+/// (catapult expects the MoQT claim as a bytestring containing CBOR).
 fn remap_claim_key(cbor: &[u8], from: i64, to: i64) -> anyhow::Result<Vec<u8>> {
     use ciborium::Value;
 
@@ -188,7 +189,10 @@ fn remap_claim_key(cbor: &[u8], from: i64, to: i64) -> anyhow::Result<Vec<u8>> {
         .into_iter()
         .map(|(k, v)| {
             if k == Value::Integer(from.into()) {
-                (Value::Integer(to.into()), v)
+                // Serialize the array value to CBOR bytes, then wrap as bstr
+                let mut inner = Vec::new();
+                ciborium::ser::into_writer(&v, &mut inner).unwrap();
+                (Value::Integer(to.into()), Value::Bytes(inner))
             } else {
                 (k, v)
             }
