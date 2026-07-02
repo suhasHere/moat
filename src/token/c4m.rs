@@ -131,10 +131,12 @@ fn encode_cose_sign1(
     ciborium::ser::into_writer(&Value::Map(header_cbor_map), &mut protected_header)
         .map_err(|e| anyhow::anyhow!("header CBOR encode failed: {e}"))?;
 
-    // Build payload CBOR
-    let payload = cwt
+    // Build payload CBOR, then fix CLAIM_MOQT key (cat-token uses 327, catapult expects 65000)
+    let payload_raw = cwt
         .encode_payload()
         .map_err(|e| anyhow::anyhow!("payload encode failed: {e}"))?;
+
+    let payload = remap_claim_key(&payload_raw, 327, 65000)?;
 
     // Build COSE Sig_structure for COSE_Sign1:
     // ["Signature1", protected_header_bstr, external_aad_bstr, payload_bstr]
@@ -168,4 +170,33 @@ fn encode_cose_sign1(
 
     // Return as base64url (single blob, no dots)
     Ok(URL_SAFE_NO_PAD.encode(&cose_bytes))
+}
+
+/// Decode a CBOR map, rename one integer key, and re-encode.
+fn remap_claim_key(cbor: &[u8], from: i64, to: i64) -> anyhow::Result<Vec<u8>> {
+    use ciborium::Value;
+
+    let value: Value = ciborium::de::from_reader(cbor)
+        .map_err(|e| anyhow::anyhow!("CBOR decode for key remap failed: {e}"))?;
+
+    let map = match value {
+        Value::Map(entries) => entries,
+        _ => anyhow::bail!("expected CBOR map in payload"),
+    };
+
+    let remapped: Vec<(Value, Value)> = map
+        .into_iter()
+        .map(|(k, v)| {
+            if k == Value::Integer(from.into()) {
+                (Value::Integer(to.into()), v)
+            } else {
+                (k, v)
+            }
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(remapped), &mut out)
+        .map_err(|e| anyhow::anyhow!("CBOR re-encode after key remap failed: {e}"))?;
+    Ok(out)
 }
