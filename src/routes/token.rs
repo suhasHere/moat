@@ -75,11 +75,11 @@ pub async fn mint_token(
                     .into(),
             ));
         }
-        // Public or authenticated — auto-join
+        // Public or authenticated — auto-join as admin (can request any role)
         (_, None) => {
-            db::add_room_member(state.db.pool(), room.id, user_id, db::MemberRole::Publisher)
+            db::add_room_member(state.db.pool(), room.id, user_id, db::MemberRole::Admin)
                 .await?;
-            db::MemberRole::Publisher
+            db::MemberRole::Admin
         }
     };
 
@@ -261,7 +261,13 @@ fn resolve_role(
     let effective = match membership {
         db::MemberRole::Admin => requested.unwrap_or(TokenRole::PubSub),
         db::MemberRole::Publisher => {
-            requested.unwrap_or(TokenRole::PubSub)
+            let role = requested.unwrap_or(TokenRole::Publisher);
+            if role == TokenRole::Subscriber {
+                return Err(AppError::Forbidden(
+                    "publisher members cannot request subscriber-only tokens".into(),
+                ));
+            }
+            role
         }
         db::MemberRole::Subscriber => {
             let role = requested.unwrap_or(TokenRole::Subscriber);
