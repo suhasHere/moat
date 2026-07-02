@@ -14,9 +14,8 @@ use crate::token::{MintRequest, TokenRole};
 use crate::AppState;
 use chrono::Utc;
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize)]
 pub struct MintTokenRequest {
-    /// Room ID (UUID) or room name
     pub room_id: String,
     pub role: Option<TokenRole>,
 }
