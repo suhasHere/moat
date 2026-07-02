@@ -4,6 +4,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::db::{self, RoomVisibility};
@@ -13,13 +14,14 @@ use crate::token::{MintRequest, TokenRole};
 use crate::AppState;
 use chrono::Utc;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct MintTokenRequest {
+    /// Room ID (UUID) or room name
     pub room_id: String,
     pub role: Option<TokenRole>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct MintTokenResponse {
     pub token: String,
     pub expires_at: u64,
@@ -27,12 +29,25 @@ pub struct MintTokenResponse {
     pub dpop: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct MintTokenScope {
     pub actions: Vec<String>,
     pub namespace: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/token",
+    request_body = MintTokenRequest,
+    responses(
+        (status = 200, description = "Token minted successfully", body = MintTokenResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "Room not found"),
+    ),
+    security(("bearer" = [])),
+    tag = "token"
+)]
 pub async fn mint_token(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -106,15 +121,14 @@ pub async fn mint_token(
     }))
 }
 
-/// Anonymous token endpoint: creates a guest user, auto-joins the room, and mints a token.
-/// Compatible with moq-chat's AnonymousStrategy: POST /v1/token/anonymous
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct AnonTokenRequest {
+    /// Room ID (UUID) or room name
     pub room_id: String,
     pub role: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AnonTokenResponse {
     pub token: String,
     pub expires_at: u64,
@@ -122,12 +136,23 @@ pub struct AnonTokenResponse {
     pub dpop: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AnonTokenScope {
     pub actions: Vec<String>,
     pub namespace: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/token/anonymous",
+    request_body = AnonTokenRequest,
+    responses(
+        (status = 200, description = "Anonymous token minted", body = AnonTokenResponse),
+        (status = 403, description = "Room does not allow anonymous access"),
+        (status = 404, description = "Room not found"),
+    ),
+    tag = "token"
+)]
 pub async fn mint_anonymous(
     State(state): State<Arc<AppState>>,
     Json(body): Json<AnonTokenRequest>,
@@ -236,13 +261,7 @@ fn resolve_role(
     let effective = match membership {
         db::MemberRole::Admin => requested.unwrap_or(TokenRole::PubSub),
         db::MemberRole::Publisher => {
-            let role = requested.unwrap_or(TokenRole::Publisher);
-            if role == TokenRole::Subscriber {
-                return Err(AppError::Forbidden(
-                    "publisher members cannot request subscriber-only tokens".into(),
-                ));
-            }
-            role
+            requested.unwrap_or(TokenRole::PubSub)
         }
         db::MemberRole::Subscriber => {
             let role = requested.unwrap_or(TokenRole::Subscriber);
