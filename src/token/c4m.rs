@@ -1,7 +1,7 @@
-use cat_token::{
-    CatTokenBuilder, Es256Algorithm, MoqtAction, MoqtScopeBuilder, encode_token,
-};
-use p256::ecdsa::SigningKey;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use cat_token::{CatTokenBuilder, CryptographicAlgorithm, Es256Algorithm, MoqtAction, MoqtScopeBuilder};
+use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use p256::pkcs8::DecodePrivateKey;
 
 use super::{MintRequest, MintedToken, TokenMinter, TokenRole};
@@ -10,6 +10,7 @@ const C4M_TOKEN_TYPE: u64 = 6501485;
 
 pub struct C4mMinter {
     signing_key: Es256Algorithm,
+    raw_signing_key: SigningKey,
     issuer: String,
     audience: String,
     default_lifetime: u64,
@@ -25,10 +26,11 @@ impl C4mMinter {
         let sk = SigningKey::from_pkcs8_pem(private_key_pem)
             .map_err(|e| anyhow::anyhow!("invalid ES256 private key PEM: {e}"))?;
         let vk = sk.verifying_key().clone();
-        let signing_key = Es256Algorithm::from_key_pair(sk, vk);
+        let signing_key = Es256Algorithm::from_key_pair(sk.clone(), vk);
 
         Ok(Self {
             signing_key,
+            raw_signing_key: sk,
             issuer,
             audience,
             default_lifetime,
@@ -83,8 +85,9 @@ impl TokenMinter for C4mMinter {
         }
 
         let token = token_builder.build();
-        let token_string = encode_token(&token, &self.signing_key)
-            .map_err(|e| anyhow::anyhow!("token encoding failed: {e}"))?;
+
+        // Encode as standard COSE_Sign1 CBOR (compatible with catapult/moxygen relay)
+        let token_string = encode_cose_sign1(&token, &self.signing_key, &self.raw_signing_key)?;
 
         Ok(MintedToken {
             token: token_string,
@@ -96,4 +99,73 @@ impl TokenMinter for C4mMinter {
     fn token_type_name(&self) -> &'static str {
         "c4m"
     }
+}
+
+/// Encode a CatToken as base64url(COSE_Sign1 CBOR).
+/// COSE_Sign1 = [protected_header_bstr, unprotected_header_map, payload_bstr, signature_bstr]
+/// Signing input = Sig_structure = ["Signature1", protected_header_bstr, external_aad, payload_bstr]
+fn encode_cose_sign1(
+    token: &cat_token::CatToken,
+    algorithm: &Es256Algorithm,
+    raw_key: &SigningKey,
+) -> anyhow::Result<String> {
+    use cat_token::Cwt;
+    use ciborium::Value;
+
+    let alg_id = algorithm.algorithm_id();
+
+    // Build protected header CBOR
+    let cwt = Cwt::new(alg_id, token.clone());
+    let mut header_map = std::collections::BTreeMap::new();
+    header_map.insert(1i64, Value::Integer(alg_id.into()));
+    if let Some(ref typ) = cwt.header.typ {
+        header_map.insert(16i64, Value::Text(typ.clone()));
+    }
+
+    let header_cbor_map: Vec<(Value, Value)> = header_map
+        .into_iter()
+        .map(|(k, v)| (Value::Integer(k.into()), v))
+        .collect();
+
+    let mut protected_header = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(header_cbor_map), &mut protected_header)
+        .map_err(|e| anyhow::anyhow!("header CBOR encode failed: {e}"))?;
+
+    // Build payload CBOR
+    let payload = cwt
+        .encode_payload()
+        .map_err(|e| anyhow::anyhow!("payload encode failed: {e}"))?;
+
+    // Build COSE Sig_structure for COSE_Sign1:
+    // ["Signature1", protected_header_bstr, external_aad_bstr, payload_bstr]
+    let sig_structure = Value::Array(vec![
+        Value::Text("Signature1".to_string()),
+        Value::Bytes(protected_header.clone()),
+        Value::Bytes(vec![]), // empty external AAD
+        Value::Bytes(payload.clone()),
+    ]);
+
+    let mut signing_input = Vec::new();
+    ciborium::ser::into_writer(&sig_structure, &mut signing_input)
+        .map_err(|e| anyhow::anyhow!("sig_structure CBOR encode failed: {e}"))?;
+
+    // Sign with ES256 (P-256 ECDSA)
+    let signature: Signature = raw_key.sign(&signing_input);
+    let sig_bytes = signature.to_bytes();
+
+    // Build COSE_Sign1 structure:
+    // [bstr(protected_header), map(unprotected_header), bstr(payload), bstr(signature)]
+    let cose_sign1 = Value::Array(vec![
+        Value::Bytes(protected_header),
+        Value::Map(vec![]), // empty unprotected header
+        Value::Bytes(payload),
+        Value::Bytes(sig_bytes.to_vec()),
+    ]);
+
+    let mut cose_bytes = Vec::new();
+    ciborium::ser::into_writer(&cose_sign1, &mut cose_bytes)
+        .map_err(|e| anyhow::anyhow!("COSE_Sign1 CBOR encode failed: {e}"))?;
+
+    // Return as base64url (single blob, no dots)
+    Ok(URL_SAFE_NO_PAD.encode(&cose_bytes))
 }
