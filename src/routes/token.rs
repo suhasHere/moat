@@ -75,8 +75,23 @@ pub async fn mint_token(
                     .into(),
             ));
         }
-        // Public or authenticated — auto-join as admin (can request any role)
-        (_, None) => {
+        // Authenticated rooms reject guest users
+        (RoomVisibility::Authenticated, None) => {
+            let user = db::get_user_by_id(state.db.pool(), user_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+            if user.idp_provider == "guest" {
+                return Err(AppError::Forbidden(
+                    "this room requires sign-in — please log in with your identity provider to join"
+                        .into(),
+                ));
+            }
+            db::add_room_member(state.db.pool(), room.id, user_id, db::MemberRole::Admin)
+                .await?;
+            db::MemberRole::Admin
+        }
+        // Public — auto-join as admin
+        (RoomVisibility::Public, None) => {
             db::add_room_member(state.db.pool(), room.id, user_id, db::MemberRole::Admin)
                 .await?;
             db::MemberRole::Admin

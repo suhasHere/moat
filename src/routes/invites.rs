@@ -4,6 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::db;
 use crate::error::AppError;
@@ -12,13 +13,13 @@ use crate::AppState;
 use chrono::Utc;
 use rand::Rng;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct CreateInviteRequest {
     pub max_uses: Option<i32>,
     pub expires_in_hours: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct InviteResponse {
     pub code: String,
     pub url: String,
@@ -27,6 +28,20 @@ pub struct InviteResponse {
     pub max_uses: Option<i32>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/rooms/{room_id}/invites",
+    params(("room_id" = uuid::Uuid, Path, description = "Room UUID")),
+    request_body = CreateInviteRequest,
+    responses(
+        (status = 200, description = "Invite created", body = InviteResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Not a room member"),
+        (status = 404, description = "Room not found"),
+    ),
+    security(("bearer" = [])),
+    tag = "invites"
+)]
 pub async fn create_invite(
     State(state): State<Arc<AppState>>,
     Path(room_id): Path<uuid::Uuid>,
@@ -69,13 +84,26 @@ pub async fn create_invite(
     }))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct RedeemResponse {
     pub room_id: String,
     pub room_name: String,
     pub joined: bool,
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/invites/{code}/redeem",
+    params(("code" = String, Path, description = "Invite code")),
+    responses(
+        (status = 200, description = "Invite redeemed", body = RedeemResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Invite expired or max uses reached"),
+        (status = 404, description = "Invite not found"),
+    ),
+    security(("bearer" = [])),
+    tag = "invites"
+)]
 pub async fn redeem_invite(
     State(state): State<Arc<AppState>>,
     Path(code): Path<String>,

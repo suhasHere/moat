@@ -1,5 +1,9 @@
 use axum::response::Html;
 
+pub async fn landing() -> Html<&'static str> {
+    Html(LANDING_HTML)
+}
+
 pub async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
@@ -306,3 +310,76 @@ function copyToken() {
 
 init();
 "#;
+
+const LANDING_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Moat — MoQ Auth Token Service</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0f1117; color: #e4e4e7; min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+}
+.container { max-width: 720px; padding: 40px 24px; text-align: center; }
+h1 {
+  font-size: 3.5rem; font-weight: 800;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  margin-bottom: 8px;
+}
+.tagline { color: #a1a1aa; font-size: 1.2rem; margin-bottom: 40px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 40px; }
+.card {
+  background: #18181b; border: 1px solid #27272a; border-radius: 12px;
+  padding: 24px; text-align: left; transition: border-color 0.2s;
+}
+.card:hover { border-color: #3b82f6; }
+.card h3 { font-size: 1rem; margin-bottom: 8px; color: #f4f4f5; }
+.card p { font-size: 0.85rem; color: #71717a; line-height: 1.5; }
+.links { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.links a {
+  display: inline-block; padding: 12px 28px; border-radius: 8px;
+  font-size: 0.95rem; font-weight: 600; text-decoration: none; transition: background 0.2s;
+}
+.links .primary { background: #3b82f6; color: #fff; }
+.links .primary:hover { background: #2563eb; }
+.links .secondary { background: #27272a; color: #e4e4e7; border: 1px solid #3f3f46; }
+.links .secondary:hover { background: #3f3f46; }
+.health { margin-top: 40px; font-size: 0.8rem; color: #52525b; }
+.health span { color: #4ade80; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Moat</h1>
+  <p class="tagline">Auth &amp; token service for Media over QUIC relays</p>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Authentication</h3>
+      <p>Guest login, Google OAuth, and Privacy Pass (RFC 9578) for anonymous attestation.</p>
+    </div>
+    <div class="card">
+      <h3>Room Management</h3>
+      <p>Create rooms with namespace prefixes, manage members and roles, share invite links.</p>
+    </div>
+    <div class="card">
+      <h3>Token Minting</h3>
+      <p>Scoped access tokens (publish/subscribe) for MoQ relays, with configurable lifetime.</p>
+    </div>
+  </div>
+
+  <div class="links">
+    <a href="/docs/" class="primary">API Documentation</a>
+    <a href="/app" class="secondary">Dashboard</a>
+    <a href="/health" class="secondary">Health Check</a>
+  </div>
+
+  <p class="health"><span>&#9679;</span> Service running</p>
+</div>
+</body>
+</html>"#;

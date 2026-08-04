@@ -12,7 +12,7 @@ pub struct MintRequest {
     pub lifetime_secs: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TokenRole {
     Publisher,

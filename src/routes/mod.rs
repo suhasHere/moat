@@ -1,8 +1,8 @@
 pub mod auth;
-mod invites;
+pub mod invites;
 pub mod privacypass;
-mod rooms;
-mod token;
+pub mod rooms;
+pub mod token;
 mod web;
 
 use std::sync::Arc;
@@ -39,8 +39,10 @@ pub fn router() -> Router<Arc<AppState>> {
             post(invites::create_invite),
         )
         .route("/v1/invites/:code/redeem", post(invites::redeem_invite))
-        // Web UI
-        .route("/", get(web::index))
+        // Landing page
+        .route("/", get(web::landing))
+        // Web UI (dashboard)
+        .route("/app", get(web::index))
         .route("/app.js", get(web::app_js))
         .route("/style.css", get(web::style_css))
         // Health

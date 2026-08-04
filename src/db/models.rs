@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, ToSchema)]
 pub struct User {
     pub id: Uuid,
     pub email: String,
@@ -14,7 +15,7 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "room_visibility", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum RoomVisibility {
@@ -23,7 +24,7 @@ pub enum RoomVisibility {
     Private,
 }
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, ToSchema)]
 pub struct Room {
     pub id: Uuid,
     pub name: String,
@@ -33,7 +34,7 @@ pub struct Room {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "member_role", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum MemberRole {
@@ -42,7 +43,7 @@ pub enum MemberRole {
     Subscriber,
 }
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, ToSchema)]
 pub struct RoomMember {
     pub id: Uuid,
     pub room_id: Uuid,
@@ -51,7 +52,7 @@ pub struct RoomMember {
     pub added_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, ToSchema)]
 pub struct RoomInvite {
     pub id: Uuid,
     pub room_id: Uuid,

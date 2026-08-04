@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod error;
 mod idp;
+mod openapi;
 mod routes;
 mod token;
 
@@ -11,10 +12,12 @@ use axum::Router;
 use clap::Parser;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::config::Config;
 use crate::db::Database;
 use crate::idp::IdpRegistry;
+use crate::openapi::ApiDoc;
 use crate::token::MinterRegistry;
 
 pub struct AppState {
@@ -61,9 +64,13 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .merge(routes::router())
+        .with_state(state)
+        .merge(
+            SwaggerUi::new("/docs/{_:.*}")
+                .url("/api-doc/openapi.json", ApiDoc::spec()),
+        )
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!("moat listening on {}", config.bind);

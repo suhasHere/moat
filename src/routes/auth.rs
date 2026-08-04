@@ -4,17 +4,18 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::db;
 use crate::error::AppError;
 use crate::AppState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct GuestLoginRequest {
     pub display_name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AuthResponse {
     pub user_id: uuid::Uuid,
     pub email: String,
@@ -23,6 +24,16 @@ pub struct AuthResponse {
     pub session_token: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/auth/guest",
+    request_body = GuestLoginRequest,
+    responses(
+        (status = 200, description = "Guest session created", body = AuthResponse),
+        (status = 400, description = "Invalid display name"),
+    ),
+    tag = "auth"
+)]
 pub async fn guest_login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<GuestLoginRequest>,
@@ -56,6 +67,16 @@ pub async fn guest_login(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/auth/google",
+    responses(
+        (status = 200, description = "Google OAuth session created", body = AuthResponse),
+        (status = 401, description = "Invalid or missing Bearer token"),
+    ),
+    security(("bearer" = [])),
+    tag = "auth"
+)]
 pub async fn google_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

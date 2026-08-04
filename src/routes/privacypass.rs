@@ -9,6 +9,7 @@ use ed25519_dalek::Signer;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use utoipa::ToSchema;
 
 use crate::error::AppError;
 use crate::AppState;
@@ -17,25 +18,34 @@ const TOKEN_TYPE_BLIND_RSA: u16 = 0x0002;
 const TOKEN_TYPE_PARTIALLY_BLIND_RSA: u16 = 0xda7a;
 const EXTENSION_TYPE_MOQ_ACTIONS: u16 = 0x0001;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ChallengeRequest {
     pub room_id: Option<String>,
+    /// Token type: 0x0002 (Blind RSA) or 0xda7a (Partially Blind RSA)
     pub token_type: Option<u16>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ChallengeResponse {
     pub token_type: u16,
+    /// Base64url-encoded TokenChallenge (RFC 9578)
     pub token_challenge: String,
+    /// Base64url-encoded issuer public key
     pub issuer_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Base64url-encoded extensions (PBRS only)
     pub extensions: Option<String>,
 }
 
-/// POST /v1/auth/privacypass/challenge
-///
-/// Returns a TokenChallenge (RFC 9578 §2.1) and the issuer's public key.
-/// For PBRS (0xda7a), also returns serialized extensions with MoQ action scope.
+#[utoipa::path(
+    post,
+    path = "/v1/auth/privacypass/challenge",
+    request_body = ChallengeRequest,
+    responses(
+        (status = 200, description = "Privacy Pass challenge issued", body = ChallengeResponse),
+    ),
+    tag = "privacypass"
+)]
 pub async fn challenge(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ChallengeRequest>,
@@ -142,10 +152,15 @@ async fn fetch_issuer_key(issuer_url: &str, token_type: u16) -> Result<Vec<u8>, 
     )))
 }
 
-/// POST /v1/auth/privacypass/token-request
-///
-/// Proxies the token request to the issuer (avoids CORS issues in browsers).
-/// Signs the request with RFC 9421 HTTP Message Signatures if a signing key is configured.
+#[utoipa::path(
+    post,
+    path = "/v1/auth/privacypass/token-request",
+    request_body(content = String, content_type = "application/private-token-request"),
+    responses(
+        (status = 200, description = "Token response from issuer (binary)", content_type = "application/private-token-response"),
+    ),
+    tag = "privacypass"
+)]
 pub async fn token_request_proxy(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
