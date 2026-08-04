@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(routes::router())
         .with_state(state)
         .merge(
-            SwaggerUi::new("/docs/{_:.*}")
+            SwaggerUi::new("/docs/{tail}")
                 .url("/api-doc/openapi.json", ApiDoc::spec()),
         )
         .layer(CorsLayer::permissive())
